@@ -1,0 +1,61 @@
+[project]
+name = "justtwod"
+version = "0.1.0"
+description = "MCP server that exposes Adobe Photoshop control tools to AI clients (Claude, Gemini, Cursor, Ollama, and more)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+  { name = "Phanindhra Kondru" },
+]
+keywords = [
+  "photoshop",
+  "adobe",
+  "mcp",
+  "model-context-protocol",
+  "ai",
+  "claude",
+  "gemini",
+  "llm",
+  "2d",
+  "raster",
+  "design",
+  "mockup",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Plugins",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Multimedia :: Graphics :: Editors :: Raster-Based",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "mcp[cli]>=1.0,<2",
+  "pillow>=10",
+]
+
+[project.urls]
+Homepage = "https://github.com/Phanikondru/justtwod"
+Repository = "https://github.com/Phanikondru/justtwod"
+Issues = "https://github.com/Phanikondru/justtwod/issues"
+Documentation = "https://github.com/Phanikondru/justtwod#readme"
+Funding = "https://github.com/sponsors/Phanikondru"
+
+[project.scripts]
+justtwod = "justtwod.server:main"
+justtwod-ping = "justtwod.smoke:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/justtwod"]

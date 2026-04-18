@@ -1,0 +1,59 @@
+# Build output
+dist/
+build/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local working docs (ship only the documented files)
+*.md
+!README.md
+!MANIFEST.md
+!mcp_server/README.md
+
+# Local tool state
+.claude/
+CLAUDE.md
+.aider*
+.cursor/
+.cursorrules
+.continue/
+.github/copilot-instructions.md
+
+# Gemini
+.gemini/
+
+# Antigravity / other AI tools
+.antigravity/
+.bolt/
+.windsurf/
+.codeium/
+.tabnine/
+.supermaven/
+
+# MCP local config
+.mcp.json
+
+# Local working files (regenerated from source)
+psd/
+exports/
+*.psd
+*.psb
+*.tif
+*.tiff
