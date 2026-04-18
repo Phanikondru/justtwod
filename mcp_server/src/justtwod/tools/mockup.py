@@ -19,9 +19,10 @@ dimensions and the screen region is measured on the fly from `screen_mask`.
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from .._app import mcp
 from ..transport import run_jsx
@@ -92,15 +93,52 @@ def _measure_screen_mask(mask_path: Path) -> dict:
     }
 
 
-def _estimate_corner_radius(mask_path: Path, bounds: dict) -> float | None:
-    """Estimate the rounded-corner radius by scanning the top-left arc.
+def _render_design_placeholder_bbox(bounds: dict, fill_hex: str = "#E0E0E0") -> Path:
+    """Create a simple WxH solid-color rectangle sized to the screen bbox.
 
-    For a rounded rectangle, row y=top has its leftmost white pixel offset
-    inward by r (the corner radius); at row y=top+r the leftmost white pixel
-    hits the bbox's left edge. So the row index where x_first == left is
-    approximately r.
+    This becomes the smart object's internal canvas — when the user double-
+    clicks "Your Design" they get a clean rectangular canvas matching the
+    screen area exactly. No dynamic-island cutouts inside the SO; those are
+    handled by a layer mask in the main doc.
     """
-    if bounds["width"] < 20 or bounds["height"] < 20:
+    r = int(fill_hex.lstrip("#")[0:2], 16)
+    g = int(fill_hex.lstrip("#")[2:4], 16)
+    b = int(fill_hex.lstrip("#")[4:6], 16)
+    placeholder = Image.new("RGBA", (int(bounds["width"]), int(bounds["height"])), (r, g, b, 255))
+    out_path = Path(tempfile.gettempdir()) / "justtwod_design_placeholder.png"
+    placeholder.save(out_path, "PNG")
+    return out_path
+
+
+def _render_mask_with_alpha(mask_path: Path, feather: float = 0.8) -> Path:
+    """Re-encode the screen mask so its grayscale value becomes the alpha
+    channel. A sub-pixel Gaussian blur is applied first because Blender's
+    IDMask compositor node emits a binary mask (no anti-aliasing) — without
+    feathering, the resulting layer-mask edges show stair-step jaggies in
+    Photoshop at any significant zoom.
+    """
+    with Image.open(mask_path) as img:
+        alpha = img.convert("L")
+    if feather > 0:
+        alpha = alpha.filter(ImageFilter.GaussianBlur(feather))
+    w, h = alpha.size
+    rgb = Image.new("RGB", (w, h), (128, 128, 128))
+    out_img = Image.merge("RGBA", (*rgb.split(), alpha))
+    out_path = Path(tempfile.gettempdir()) / f"justtwod_mask_rgba_{mask_path.stem}.png"
+    out_img.save(out_path, "PNG")
+    return out_path
+
+
+def _estimate_corner_radius(mask_path: Path, bounds: dict) -> float | None:
+    """Estimate the rounded-corner radius by least-squares fitting a circle
+    to the top-left arc of the mask.
+
+    For each row near the top of the bbox, we find the leftmost white pixel
+    — those (x, y) samples trace the corner arc. Fitting a circle through
+    them recovers the radius with ~1 px accuracy (vs. the row-count heuristic
+    which under-estimates on anti-aliased masks).
+    """
+    if bounds["width"] < 40 or bounds["height"] < 40:
         return None
 
     with Image.open(mask_path) as img:
@@ -109,21 +147,90 @@ def _estimate_corner_radius(mask_path: Path, bounds: dict) -> float | None:
 
     left = bounds["left"]
     top = bounds["top"]
-    right = bounds["right"]
-    scan_rows = min(bounds["height"] // 2, 500)
-    first_left_row = None
-    for dy in range(scan_rows):
+    width = bounds["width"]
+    height = bounds["height"]
+
+    max_scan = min(height // 3, 200)
+    samples: list[tuple[float, float]] = []
+    for dy in range(max_scan):
         y = top + dy
-        for x in range(left, right):
+        for x in range(left, left + width // 3):
             if pixels[x, y] > 127:
+                # Stop collecting once the arc reaches the bbox left edge —
+                # straight-edge rows would skew the circle fit.
                 if x == left:
-                    first_left_row = dy
+                    dy = max_scan  # exit outer loop
+                    break
+                samples.append((float(x), float(y)))
                 break
-        if first_left_row is not None:
+        if dy == max_scan:
             break
-    if first_left_row is None or first_left_row < 2:
-        return 0.0
-    return float(first_left_row)
+
+    if len(samples) < 8:
+        return None
+
+    # Algebraic least-squares circle fit: solve A·[a, b, c] = b for the
+    # center (a, b) and c = r² − a² − b².
+    n = len(samples)
+    sx = sy = sxx = syy = sxy = sxxx = syyy = sxyy = sxxy = 0.0
+    for x, y in samples:
+        sx += x;       sy += y
+        sxx += x * x;  syy += y * y
+        sxy += x * y
+        sxxx += x * x * x
+        syyy += y * y * y
+        sxyy += x * y * y
+        sxxy += x * x * y
+
+    A = [
+        [sxx, sxy, sx],
+        [sxy, syy, sy],
+        [sx,  sy,  float(n)],
+    ]
+    rhs = [
+        -(sxxx + sxyy),
+        -(sxxy + syyy),
+        -(sxx + syy),
+    ]
+
+    def _solve_3x3(mat: list[list[float]], b: list[float]) -> tuple[float, float, float] | None:
+        m = [row[:] + [b[i]] for i, row in enumerate(mat)]
+        for i in range(3):
+            pivot = i
+            for k in range(i + 1, 3):
+                if abs(m[k][i]) > abs(m[pivot][i]):
+                    pivot = k
+            if abs(m[pivot][i]) < 1e-12:
+                return None
+            m[i], m[pivot] = m[pivot], m[i]
+            for k in range(i + 1, 3):
+                factor = m[k][i] / m[i][i]
+                for j in range(i, 4):
+                    m[k][j] -= factor * m[i][j]
+        x = [0.0, 0.0, 0.0]
+        for i in range(2, -1, -1):
+            s = m[i][3]
+            for j in range(i + 1, 3):
+                s -= m[i][j] * x[j]
+            x[i] = s / m[i][i]
+        return x[0], x[1], x[2]
+
+    sol = _solve_3x3(A, rhs)
+    if sol is None:
+        return None
+    D, E, F = sol
+    cx = -D / 2.0
+    cy = -E / 2.0
+    r2 = cx * cx + cy * cy - F
+    if r2 <= 0:
+        return None
+
+    radius = r2 ** 0.5
+    expected_cx = left + radius
+    expected_cy = top + radius
+    if abs(cx - expected_cx) > 5 or abs(cy - expected_cy) > 5:
+        return None
+    return round(radius, 1)
 
 
 @mcp.tool()
@@ -133,20 +240,39 @@ def build_product_mockup(
     canvas_width: int | None = None,
     canvas_height: int | None = None,
     manifest: str | None = None,
+    background_color: str = "#F5F5F5",
+    reflections_opacity: int = 20,
+    corner_radius: int | None = None,
+    placeholder_color: str = "#E0E0E0",
+    add_guides: bool = True,
 ) -> dict:
-    """Build a layered mockup PSD from a folder of Blender render passes.
+    """Build a layered, grouped, color-managed mockup PSD from Blender renders.
 
-    Looks for `phone_body`, `phone_shadow`, `phone_reflections` (optional),
-    and `screen_mask` files in the folder (trailing version suffixes OK).
-    Creates a new document, places each pass as its own layer with the
-    correct blend mode, and adds a "Your Design" smart-object placeholder
-    sized to the screen mask's bounding box.
+    Produces a PSD with this structure:
 
-    If `manifest` points to a `mockup_manifest.json` produced by justthreed,
-    its canvas dimensions and editable-region bounds are used directly,
-    skipping the on-the-fly measurement.
+        ┌ Screen (group)
+        │   ├ Screen Mask (hidden, clipping source)
+        │   └ Your Design (smart object, with layer mask)
+        ├ Phone (group)
+        │   ├ Reflections (Screen @ reflections_opacity%)
+        │   ├ Phone Body
+        │   └ Shadow (Multiply)
+        └ Background (solid fill)
 
-    If `output_psd` is given, saves the finished PSD to that path.
+    Parameters:
+    - `renders_folder`: directory containing phone_body, phone_shadow,
+      phone_reflections (optional), screen_mask files.
+    - `output_psd`: where to save the finished PSD. If None, the PSD stays
+      open in Photoshop unsaved.
+    - `manifest`: path to a `mockup_manifest.json` from justthreed — if
+      present, its canvas / bounds / corner_radius are authoritative.
+    - `background_color`: hex color for the bottom Background layer.
+    - `reflections_opacity`: 0-100, strength of the reflections pass.
+    - `corner_radius`: pixel radius override; defaults to the manifest's
+      value or an auto-estimate from the mask.
+    - `placeholder_color`: fill of the "Your Design" placeholder (visible
+      until the user replaces the smart object contents).
+    - `add_guides`: if True, adds ruler guides at the screen bbox edges.
     """
     folder = Path(renders_folder).expanduser().resolve()
     if not folder.is_dir():
@@ -176,13 +302,16 @@ def build_product_mockup(
         canvas_h = int(manifest_data["canvas"]["height"])
         screen_region = manifest_data["editable_regions"][0]
         bounds = screen_region["bounds"]
-        corner_radius = screen_region.get("corner_radius")
+        manifest_radius = screen_region.get("corner_radius")
     else:
         measured = _measure_screen_mask(found["screen_mask"])  # type: ignore[arg-type]
         canvas_w = canvas_width or int(measured["canvas"]["width"])
         canvas_h = canvas_height or int(measured["canvas"]["height"])
         bounds = measured["bounds"]
-        corner_radius = measured.get("corner_radius")
+        manifest_radius = measured.get("corner_radius")
+
+    if corner_radius is None:
+        corner_radius = manifest_radius
 
     paths_js = {
         "body":        js_string(str(found["phone_body"])),
@@ -191,6 +320,20 @@ def build_product_mockup(
     }
     refl = found["phone_reflections"]
     reflections_js = js_string(str(refl)) if refl else "null"
+
+    # Two helper PNGs:
+    # - placeholder_bbox.png: simple WxH rect → becomes the SO's internal canvas
+    # - mask_with_alpha.png: mask luminance encoded as alpha → lets Photoshop
+    #   load the screen shape as a selection for the layer mask
+    placeholder_path = _render_design_placeholder_bbox(bounds, placeholder_color)
+    mask_rgba_path = _render_mask_with_alpha(found["screen_mask"])  # type: ignore[arg-type]
+    placeholder_js = js_string(str(placeholder_path))
+    mask_rgba_js = js_string(str(mask_rgba_path))
+
+    bg_hex = background_color.lstrip("#").upper()
+    if len(bg_hex) != 6:
+        raise ValueError(f"background_color must be a 6-char hex string: {background_color!r}")
+    reflections_opacity = max(0, min(100, int(reflections_opacity)))
 
     save_js = ""
     if output_psd:
@@ -210,6 +353,10 @@ def build_product_mockup(
     )
 
     code = f"""
+    var bounds = {json.dumps(bounds)};
+    var cornerRadius = {corner_radius_js};
+    var addGuides = {str(add_guides).lower()};
+
     var doc = app.documents.add(
         new UnitValue({canvas_w}, "px"),
         new UnitValue({canvas_h}, "px"),
@@ -220,6 +367,9 @@ def build_product_mockup(
         1.0,
         BitsPerChannelType.SIXTEEN
     );
+
+    // Tag with sRGB so colors are consistent across machines.
+    try {{ doc.colorProfileName = "sRGB IEC61966-2.1"; }} catch (e) {{}}
 
     function placeFile(path, layerName) {{
         var f = new File(path);
@@ -233,79 +383,111 @@ def build_product_mockup(
         return l;
     }}
 
-    // Stack bottom-up so each new placement sits above the previous.
+    // --- Background layer (solid fill, always the bottom of the stack) ---
+    var bgLayer = doc.artLayers.add();
+    bgLayer.name = "Background";
+    doc.activeLayer = bgLayer;
+    var bgFill = new SolidColor();
+    bgFill.rgb.hexValue = "{bg_hex}";
+    doc.selection.selectAll();
+    doc.selection.fill(bgFill);
+    doc.selection.deselect();
+
+    // --- Phone passes stack (bottom-up: shadow, body, reflections) ---
     var shadow = placeFile({paths_js["shadow"]}, "Shadow");
     shadow.blendMode = BlendMode.MULTIPLY;
 
     var body = placeFile({paths_js["body"]}, "Phone Body");
 
+    var refl = null;
     var reflectionsPath = {reflections_js};
     if (reflectionsPath !== null) {{
-        var refl = placeFile(reflectionsPath, "Reflections");
+        refl = placeFile(reflectionsPath, "Reflections");
         refl.blendMode = BlendMode.SCREEN;
-        refl.opacity = 40;
+        refl.opacity = {reflections_opacity};
     }}
 
-    var mask = placeFile({paths_js["screen_mask"]}, "Screen Mask");
+    // Place the alpha-encoded mask; its transparency carries the screen
+    // shape we'll later apply as a layer mask on the smart object.
+    var mask = placeFile({mask_rgba_js}, "Screen Mask");
     mask.visible = false;
 
-    // Smart object placeholder: a solid-color smart object sized to the
-    // screen bbox. User double-clicks it and replaces with their design.
-    var bounds = {json.dumps(bounds)};
-    var cornerRadius = {corner_radius_js};
-
-    // Create a new layer, draw a rounded rect on it, convert to smart object.
-    var placeholder = doc.artLayers.add();
-    placeholder.name = "Your Design (smart object)";
+    // Placeholder smart object: a clean WxH rectangle sized to the screen
+    // bbox. When the user double-clicks, they edit on that simple canvas
+    // (no dynamic-island cutouts inside) — the mask shape is applied
+    // externally as a layer mask in this doc.
+    var placeholder = placeFile({placeholder_js}, "Your Design (smart object)");
     doc.activeLayer = placeholder;
-    var fill = new SolidColor();
-    fill.rgb.hexValue = "E0E0E0";
+    // Undo the place-action's fit-to-canvas scaling so the SO is at 1:1.
+    executeAction(stringIDToTypeID("placedLayerResetTransforms"), undefined, DialogModes.NO);
+    // Translate placeholder to its target position (bbox top-left).
+    var pb = placeholder.bounds;
+    placeholder.translate(
+        new UnitValue(bounds.left - pb[0].value, "px"),
+        new UnitValue(bounds.top - pb[1].value, "px")
+    );
+    placeholder.move(body, ElementPlacement.PLACEBEFORE);
 
-    if (cornerRadius && cornerRadius > 0) {{
-        var r = cornerRadius;
-        var x1 = bounds.left, y1 = bounds.top, x2 = bounds.right, y2 = bounds.bottom;
-        function fillRect(a, b, c, d) {{
-            doc.selection.select([[a,b],[c,b],[c,d],[a,d]], SelectionType.REPLACE, 0, false);
-            doc.selection.fill(fill);
-        }}
-        function fillEllipse(cx, cy, rad) {{
-            var desc = new ActionDescriptor();
-            var ref = new ActionReference();
-            ref.putProperty(charIDToTypeID("Chnl"), charIDToTypeID("fsel"));
-            desc.putReference(charIDToTypeID("null"), ref);
-            var region = new ActionDescriptor();
-            region.putUnitDouble(charIDToTypeID("Top "), charIDToTypeID("#Pxl"), cy - rad);
-            region.putUnitDouble(charIDToTypeID("Left"), charIDToTypeID("#Pxl"), cx - rad);
-            region.putUnitDouble(charIDToTypeID("Btom"), charIDToTypeID("#Pxl"), cy + rad);
-            region.putUnitDouble(charIDToTypeID("Rght"), charIDToTypeID("#Pxl"), cx + rad);
-            desc.putObject(charIDToTypeID("T   "), charIDToTypeID("Elps"), region);
-            desc.putBoolean(charIDToTypeID("AntA"), true);
-            executeAction(charIDToTypeID("setd"), desc, DialogModes.NO);
-            doc.selection.fill(fill);
-        }}
-        fillRect(x1 + r, y1, x2 - r, y2);
-        fillRect(x1, y1 + r, x2, y2 - r);
-        fillEllipse(x1 + r, y1 + r, r);
-        fillEllipse(x2 - r, y1 + r, r);
-        fillEllipse(x2 - r, y2 - r, r);
-        fillEllipse(x1 + r, y2 - r, r);
-    }} else {{
-        doc.selection.select([
-            [bounds.left,  bounds.top],
-            [bounds.right, bounds.top],
-            [bounds.right, bounds.bottom],
-            [bounds.left,  bounds.bottom]
-        ], SelectionType.REPLACE, 0, false);
-        doc.selection.fill(fill);
+    // Load the mask layer's transparency as a selection, then add a layer
+    // mask to the placeholder that "reveals the selection" — the SO now
+    // renders clipped to the exact screen shape (dynamic island, corners).
+    var selDesc = new ActionDescriptor();
+    var selRef = new ActionReference();
+    selRef.putProperty(charIDToTypeID("Chnl"), charIDToTypeID("fsel"));
+    selDesc.putReference(charIDToTypeID("null"), selRef);
+    var srcRef = new ActionReference();
+    srcRef.putEnumerated(charIDToTypeID("Chnl"), charIDToTypeID("Chnl"), charIDToTypeID("Trsp"));
+    srcRef.putIdentifier(charIDToTypeID("Lyr "), mask.id);
+    selDesc.putReference(charIDToTypeID("T   "), srcRef);
+    executeAction(charIDToTypeID("setd"), selDesc, DialogModes.NO);
+
+    doc.activeLayer = placeholder;
+    var maskDesc = new ActionDescriptor();
+    maskDesc.putClass(charIDToTypeID("Nw  "), charIDToTypeID("Chnl"));
+    var maskRef = new ActionReference();
+    maskRef.putEnumerated(charIDToTypeID("Chnl"), charIDToTypeID("Chnl"), charIDToTypeID("Msk "));
+    maskDesc.putReference(charIDToTypeID("At  "), maskRef);
+    maskDesc.putEnumerated(charIDToTypeID("Usng"), charIDToTypeID("UsrM"), charIDToTypeID("RvlS"));
+    executeAction(charIDToTypeID("Mk  "), maskDesc, DialogModes.NO);
+    try {{ doc.selection.deselect(); }} catch (e) {{}}
+
+    // --- Organize layers into groups (senior-designer hygiene) ---
+    // Phone group: Reflections (optional) + Phone Body + Shadow
+    var phoneGroup = doc.layerSets.add();
+    phoneGroup.name = "Phone";
+    phoneGroup.move(body, ElementPlacement.PLACEBEFORE);
+    if (refl !== null) refl.move(phoneGroup, ElementPlacement.PLACEATEND);
+    body.move(phoneGroup, ElementPlacement.PLACEATEND);
+    shadow.move(phoneGroup, ElementPlacement.PLACEATEND);
+
+    // Screen group: Screen Mask (hidden) + Your Design (clipped)
+    var screenGroup = doc.layerSets.add();
+    screenGroup.name = "Screen";
+    screenGroup.move(phoneGroup, ElementPlacement.PLACEBEFORE);
+    placeholder.move(screenGroup, ElementPlacement.PLACEATEND);
+    mask.move(screenGroup, ElementPlacement.PLACEATEND);
+
+    // --- Ruler guides at screen bbox edges for layout reference ---
+    if (addGuides) {{
+        try {{
+            doc.guides.add(Direction.VERTICAL,   new UnitValue(bounds.left, "px"));
+            doc.guides.add(Direction.VERTICAL,   new UnitValue(bounds.right, "px"));
+            doc.guides.add(Direction.HORIZONTAL, new UnitValue(bounds.top, "px"));
+            doc.guides.add(Direction.HORIZONTAL, new UnitValue(bounds.bottom, "px"));
+        }} catch (e) {{}}
     }}
-    doc.selection.deselect();
-    doc.activeLayer = placeholder;
-    executeAction(stringIDToTypeID("newPlacedLayer"), undefined, DialogModes.NO);
 
-    // Reorder: placeholder above Phone Body, below Screen Mask (which is hidden).
-    var placeholderLayer = doc.activeLayer;
+    // --- Cleanup: drop the empty default layer PS added at doc creation ---
+    for (var i = doc.layers.length - 1; i >= 0; i--) {{
+        var candidate = doc.layers[i];
+        if (candidate.typename === "ArtLayer" && /^Layer \\d+$/.test(candidate.name)) {{
+            try {{ candidate.remove(); }} catch (e) {{}}
+        }}
+    }}
+
+    // --- Push Background to the bottom of the stack ---
     try {{
-        placeholderLayer.move(body, ElementPlacement.PLACEBEFORE);
+        bgLayer.move(doc.layers[doc.layers.length - 1], ElementPlacement.PLACEAFTER);
     }} catch (e) {{}}
 
     {save_js}
