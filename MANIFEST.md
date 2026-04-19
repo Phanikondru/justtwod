@@ -36,7 +36,22 @@ cap, etc.).
         "height": 1294
       },
       "corner_radius": 75,
-      "perspective": null
+      "perspective": null,
+      "cutouts": [
+        {
+          "name": "DynamicIsland",
+          "bounds": {
+            "left": 1798,
+            "top": 471,
+            "right": 2042,
+            "bottom": 555,
+            "width": 244,
+            "height": 84
+          },
+          "corner_radius": 42,
+          "perspective": null
+        }
+      ]
     }
   ]
 }
@@ -47,8 +62,10 @@ cap, etc.).
 - **`version`** — schema version. Currently `1`. Breaking changes bump this.
 - **`product`** — short identifier (used for layer naming in the PSD).
 - **`canvas`** — render canvas size. Should match every pass.
-- **`passes`** — paths relative to the manifest's own folder. `body`,
-  `shadow`, and `screen_mask` are required; `reflections` is optional.
+- **`passes`** — paths relative to the manifest's own folder. `body` and
+  `shadow` are required; `reflections` and `screen_mask` are optional.
+  `screen_mask` is only needed when the consumer wants to fall back to
+  pixel-derived geometry instead of the vector geometry in `editable_regions`.
 - **`editable_regions`** — array of interactive areas the user can swap a
   design into. Phones have one (Screen). Laptops have two (Screen + Keyboard).
   Bottles have one (Label). Each entry:
@@ -56,6 +73,10 @@ cap, etc.).
     - **`bounds`** — pixel rectangle in canvas coordinates (top-left origin).
     - **`corner_radius`** — pixels, or `null` for a sharp rectangle.
     - **`perspective`** — future: 4-point warp for off-axis surfaces. `null` in v1.
+    - **`cutouts`** — optional array of nested regions (same shape) that the
+      consumer should subtract from this region's mask. Use for dynamic islands,
+      camera notches, speaker grilles, etc. Each cutout uses the same field set
+      as a top-level region.
 
 ## Future fields (not yet implemented)
 
@@ -63,8 +84,17 @@ cap, etc.).
 - **`id_mask`** — per-material IDs for targeted color grading.
 - **`exr`** — the 32-bit float pass for advanced re-grading workflows.
 
-## How justthreed will write it
+## How justthreed writes it
 
-`justthreed` is expected to add a new tool (`export_mockup_manifest`) that
-writes this JSON alongside the rendered passes. Until then, justtwod falls
-back to on-the-fly measurement from the `screen_mask` PNG.
+Call the `export_mockup_manifest` tool. It projects each editable region
+object's bounding box through the active camera and writes pixel-space
+geometry. Two ways to declare regions:
+
+1. **Auto-discovery** — set custom property `editable_region = True` on the
+   screen object, and `editable_region_cutout = True` on cutout children
+   (e.g. the dynamic island). Optionally set `corner_radius_px` on either.
+2. **Explicit** — pass a `regions` argument listing object names + cutouts.
+
+If no manifest is present, justtwod falls back to measuring the `screen_mask`
+PNG — slower, less accurate, and requires the (otherwise unnecessary) mask
+render pass.
