@@ -9,6 +9,7 @@ from . import adjustment  # noqa: F401
 from . import canvas  # noqa: F401
 from . import core  # noqa: F401
 from . import document  # noqa: F401
+from . import history  # noqa: F401
 from . import inspection  # noqa: F401
 from . import layer  # noqa: F401
 from . import smart_object  # noqa: F401

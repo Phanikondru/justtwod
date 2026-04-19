@@ -1,28 +1,39 @@
 # justtwod
 
+> **Note:** Unofficial, independent project. Not affiliated with or endorsed by Adobe Inc.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-macOS-lightgrey.svg)]()
+[![Tools](https://img.shields.io/badge/Tools-74-success.svg)]()
+[![MCP](https://img.shields.io/badge/Protocol-MCP-purple.svg)](https://modelcontextprotocol.io/)
+
 **Control Adobe Photoshop with natural language.** An MCP server that exposes
-71 Photoshop operations — documents, layers, smart objects, text, shapes,
-selections, masks, transforms, adjustments, filters, canvas, and a flagship
-`build_product_mockup` tool — to any MCP-capable AI client.
+74 Photoshop operations — documents, layers, smart objects, text, shapes,
+selections, masks, transforms, adjustments, filters, canvas, history, and a
+flagship `build_product_mockup` tool — to any MCP-capable AI client.
+
+> **🎨 74 Tools** | **🖼️ Smart-Object Mockups** | **🎯 Blender→PSD Pipeline** | **✂️ Clipping Masks** | **⏮️ Undo / Redo** | **🧩 ExtendScript Escape Hatch**
 
 Companion to [`justthreed`](https://github.com/Phanikondru/justthreed).
 Where `justthreed` is *just 3D* (Blender), `justtwod` is *just 2D* (Photoshop).
 Together they form a 3D-to-deliverable pipeline: model and render in Blender,
 composite and mock up in Photoshop, all driven by natural language.
 
-## Why
+## Features
 
-Designers spend hours repeating the same Photoshop steps: open renders, stack
-passes with the right blend modes, set up a smart object at the screen region
-with the right corner radius, add a background, export. `justtwod` lets an AI
-do it in one sentence:
-
-> "Build a mockup PSD from the renders in `~/Desktop/phone_shoot`, save it to
-> `~/Desktop/phone_mockup.psd`."
-
-The user gets a clean, layered PSD with a "Your Design" smart-object
-placeholder. They double-click, drop in a Figma export, save → finished
-marketing asset.
+- ✅ **74 curated tools** covering the whole compositing pipeline
+- ✅ **Flagship `build_product_mockup`** — render folder → layered PSD with a smart-object placeholder
+- ✅ **Deep smart-object support** — place, create, replace contents, edit contents, reset transforms
+- ✅ **Full mask suite** — layer masks, clipping masks, apply / delete
+- ✅ **History control** — undo, redo, inspect history stack with step counts
+- ✅ **Selection primitives** — rect, ellipse, feather, expand, contract, invert, load from layer
+- ✅ **Structured responses** — every tool returns `{ok, result | error}`, not loose strings
+- ✅ **Photoshop auto-detection** — override with `JUSTTWOD_PHOTOSHOP_APP` if needed
+- ✅ **ExtendScript escape hatch** — `execute_jsx` for anything not yet wrapped
+- ✅ **JSON polyfill built in** — ExtendScript lacks native JSON; we inject one
+- ✅ **Pairs with `justthreed`** via the `mockup_manifest.json` schema
+- ✅ **Python + FastMCP** — `uv sync` and go
 
 ## Requirements
 
@@ -49,7 +60,9 @@ uv run justtwod-ping
 
 ## Configure your MCP client
 
-Add to `~/.claude.json` (or the equivalent for your client):
+### Claude Code / Claude Desktop
+
+Add to `~/.claude.json` (or `~/Library/Application Support/Claude/claude_desktop_config.json` for Claude Desktop):
 
 ```json
 {
@@ -62,7 +75,26 @@ Add to `~/.claude.json` (or the equivalent for your client):
 }
 ```
 
-## The 71 tools
+### Cursor
+
+Add to `.cursor/config.json` or your workspace settings:
+
+```json
+{
+  "mcpServers": {
+    "justtwod": {
+      "command": "uv",
+      "args": ["run", "--directory", "/absolute/path/to/justtwod/mcp_server", "justtwod"]
+    }
+  }
+}
+```
+
+### Environment variables
+
+- `JUSTTWOD_PHOTOSHOP_APP` *(optional)* — path or app name override if auto-detection misses your install (e.g. `"Adobe Photoshop 2026"`).
+
+## The 74 tools
 
 | Category | Tools |
 |---|---|
@@ -79,6 +111,7 @@ Add to `~/.claude.json` (or the equivalent for your client):
 | **Adjustments** | `apply_levels`, `apply_brightness_contrast`, `apply_hue_saturation`, `apply_color_balance` |
 | **Filters** | `gaussian_blur`, `motion_blur`, `sharpen`, `add_noise` |
 | **Canvas** | `resize_canvas`, `crop`, `rotate_canvas`, `trim_transparent`, `flatten_image`, `merge_visible` |
+| **History** | `undo`, `redo`, `get_history_states` |
 | **Compositions** | `build_product_mockup` |
 
 Every tool is documented via its docstring, which the MCP client surfaces to
@@ -115,6 +148,101 @@ export, save, done.
 See [MANIFEST.md](MANIFEST.md) for the `mockup_manifest.json` schema that
 `justthreed` will produce automatically to skip on-the-fly mask measurement.
 
+## Example prompts
+
+Paste these into Claude / Cursor once justtwod is configured:
+
+<details>
+<summary>🎨 Build a product mockup from Blender renders</summary>
+
+```
+Run build_product_mockup on ~/Desktop/phone_shoot/renders and save the PSD
+to ~/Desktop/phone_mockup.psd. Use the mockup_manifest.json in that folder
+if present.
+```
+
+</details>
+
+<details>
+<summary>🖼️ Drop a Figma export into an existing mockup</summary>
+
+```
+Open ~/Desktop/phone_mockup.psd. Replace the contents of the "Your Design"
+smart object with ~/Desktop/figma-export.png. Save and export a 2x PNG
+next to the PSD.
+```
+
+</details>
+
+<details>
+<summary>✂️ Mask a product photo to a shape</summary>
+
+```
+Open ~/Desktop/hero.jpg. Create a rounded-rectangle shape layer at
+(200, 200) sized 1200x800 with a 48px corner radius. Use it as a clipping
+mask on the photo layer. Flatten and save as hero-rounded.psd.
+```
+
+</details>
+
+<details>
+<summary>📝 Text poster design</summary>
+
+```
+Create a 1080x1350 RGB document at 300dpi. Fill the background layer
+with #7828C8. Add centered "SUMMER" in 96pt white at (540, 300), and
+"2026" at 128pt white at (540, 450). Apply a 2px Gaussian blur to the
+background. Save as summer-poster.psd.
+```
+
+</details>
+
+<details>
+<summary>🎭 Layered composite with blend modes</summary>
+
+```
+Create a 1920x1080 RGB document. Place ~/Desktop/sky.jpg as a smart
+object fitted to the canvas. Duplicate it, set the copy to Soft Light
+at 60% opacity. Add a text layer "WANDER" in 200pt white, centered.
+Group the text and top layer as "Overlay". Save as wander.psd.
+```
+
+</details>
+
+<details>
+<summary>⏮️ Undo an experiment</summary>
+
+```
+Apply a 30px Gaussian blur to the active layer.
+Actually, that's too much — undo the last step and apply 8px instead.
+Show me the history states afterwards.
+```
+
+</details>
+
+<details>
+<summary>🧩 Escape-hatch: arbitrary ExtendScript</summary>
+
+```
+Run execute_jsx with this code:
+  app.activeDocument.suspendHistory("Batch rename", "for (var i = 0; i < app.activeDocument.layers.length; i++) { app.activeDocument.layers[i].name = 'Layer_' + (i+1); }");
+```
+
+</details>
+
+## Quick-start prompt table
+
+| Task | Prompt |
+|---|---|
+| **Product mockup** | "Build a mockup PSD from the renders in `~/Desktop/phone_shoot`." |
+| **Swap design** | "Replace the smart object 'Your Design' with `~/Desktop/figma-export.png`." |
+| **New document** | "Create a 1920x1080 RGB document at 72dpi named 'hero'." |
+| **Rounded crop** | "Mask the top layer with a rounded-rectangle clipping mask at (100,100)–(900,600), 40px radius." |
+| **Color grade** | "Apply levels with black point 15, white point 240, gamma 1.1 to the active layer." |
+| **Text styling** | "Change the 'Title' text to Helvetica Neue 72pt, color white, center aligned." |
+| **Undo** | "Undo the last 3 steps and show me the history stack." |
+| **Export** | "Save a 2x PNG and a quality-10 JPEG next to the open PSD." |
+
 ## Architecture
 
 ```
@@ -135,12 +263,40 @@ AI client ── MCP ──▶ justtwod server (Python)
 - A future UXP-plugin transport will replace `osascript` for faster,
   bidirectional round-trips
 
+## Troubleshooting
+
+**"Could not find Adobe Photoshop"** — set `JUSTTWOD_PHOTOSHOP_APP` to the exact application name, e.g.:
+
+```json
+{ "env": { "JUSTTWOD_PHOTOSHOP_APP": "Adobe Photoshop 2026" } }
+```
+
+**`ping` hangs or times out** — make sure Photoshop is running and has at least one window open. macOS may prompt for Automation permission the first time (System Settings → Privacy & Security → Automation); allow it for your terminal / MCP client.
+
+**Tool call fails with "No document is open"** — most tools require an active document. Start with `new_document` or `open_file` first.
+
+**Something I want isn't wrapped yet** — use `execute_jsx(code)` to run raw ExtendScript, then [open an issue](https://github.com/Phanikondru/justtwod/issues) so we can add a proper tool.
+
 ## Status
 
-v0.1 — scaffolding + 71 tools + one flagship composition. Production-usable
+v0.1 — scaffolding + 74 tools + one flagship composition. Production-usable
 for the mockup workflow today. Next up: `justthreed` writes manifests,
 justtwod consumes them; vector shapes; Windows support.
+
+## Contributing
+
+PRs welcome — especially for:
+- Windows transport (COM automation counterpart to `osascript`)
+- Action playback + custom-action recording tools
+- Vector path shapes and pen-tool primitives
+- Additional adjustment layers (curves, selective color, gradient map)
+
+Open an issue first for anything larger than a one-file change.
 
 ## License
 
 MIT
+
+## Acknowledgments
+
+- Built on [FastMCP](https://github.com/jlowin/fastmcp) and the [Model Context Protocol](https://modelcontextprotocol.io/)
